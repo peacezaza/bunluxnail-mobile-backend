@@ -9,7 +9,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
-.env
+
 
 # Node.js / React Native
 node_modules/

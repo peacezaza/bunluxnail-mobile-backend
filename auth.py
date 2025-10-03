@@ -40,3 +40,19 @@ def create_access_token(data: dict, expires_delta: timedelta | None = None):
 
 def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
+
+
+def verify_jwt_token(token: str = Depends(oauth2_scheme)):
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        return {
+            "valid": True,
+            "id": payload.get("id"),
+            "exp": payload.get("exp"),
+        }
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )

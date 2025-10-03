@@ -1,11 +1,13 @@
 import os
 from http.client import responses
 
-from fastapi import FastAPI
+from fastapi import FastAPI, UploadFile, File, Form
 from dotenv import load_dotenv
 import asyncpg
+import shutil
+from datetime import datetime
 
-
+from fastapi.middleware.cors import CORSMiddleware
 from auth import *
 
 
@@ -14,9 +16,22 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+
+UPLOAD_DIR = "uploads"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 #
 @app.on_event("startup")
 async def startup():
+    print("Server started, endpoints loaded")
     app.state.pool = await asyncpg.create_pool(
         dsn=DATABASE_URL,
         statement_cache_size=0
@@ -70,14 +85,52 @@ async def signup(data : dict):
             return {"message": "User created", "status" : True, "token": token}
 
 @app.post("/update_user")
-async def update_user(data : dict):
-    id = data["id"]
-    first_name = data["first_name"]
-    last_name = data["last_name"]
-    phone = data["phone"]
-    gender = data["gender"]
-    picture = data["picture"]
-    role = data["role"]
+async def update_user(
+    id: int = Form(...),
+    first_name: str = Form(...),
+    last_name: str = Form(...),
+    phone: str = Form(...),
+    gender: str = Form(...),
+    role: str = Form(...),
+    picture: UploadFile = File(...),
+    result: dict = Depends(verify_jwt_token)
+):
+
+    file_ext = os.path.splitext(picture.filename)[1]  # keep .jpg/.png
+    filename = f"user_{id}_{datetime.now().strftime('%Y%m%d%H%M%S')}{file_ext}"
+    file_path = os.path.join(UPLOAD_DIR, filename)
+
+    with open(file_path, "wb") as buffer:
+        shutil.copyfileobj(picture.file, buffer)
+    query = """
+        UPDATE users
+        SET first_name = $1,
+            last_name = $2,
+            phone = $3,
+            gender = $4,
+            picture = $5,
+            role = $6
+        WHERE id = $7
+        RETURNING id
+    """
+    async with app.state.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            query,
+            first_name,
+            last_name,
+            phone,
+            gender,
+            filename,
+            role,
+            id
+        )
+    if row:
+        return {"message": "User updated", "id": row["id"]}
+    else:
+        return {"message": "User not found"}
+
+
+
 
 
 @app.get("/login")
@@ -130,8 +183,14 @@ async def login(data :dict):
                 else:
                     return {"message" : "Incorrect Password", "status" : False}
             else:
-                return {"message": "User not found", "status" : False}
+                return {"message": "Email not found", "status" : False}
 
 
-# @app.get('/get_otp')
-# async def get_otp():
+
+
+@app.get("/verify-token")
+async def verify_token(result: dict = Depends(verify_jwt_token)):
+    return result
+
+
+# "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6NywiZXhwIjoxNzU5NDc5MDMwfQ.6eb9DBDTyuris4hViDlC8XZNmod3DM-RUWU5nmCRfGw",
