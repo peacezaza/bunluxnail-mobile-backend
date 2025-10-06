@@ -1,6 +1,6 @@
 import os
 from http.client import responses
-
+import base64
 from fastapi import FastAPI, UploadFile, File, Form
 from dotenv import load_dotenv
 import asyncpg
@@ -96,6 +96,8 @@ async def update_user(
     result: dict = Depends(verify_jwt_token)
 ):
 
+    image_bytes = await picture.read()
+
     file_ext = os.path.splitext(picture.filename)[1]  # keep .jpg/.png
     filename = f"user_{id}_{datetime.now().strftime('%Y%m%d%H%M%S')}{file_ext}"
     file_path = os.path.join(UPLOAD_DIR, filename)
@@ -120,7 +122,7 @@ async def update_user(
             last_name,
             phone,
             gender,
-            filename,
+            image_bytes,
             role,
             id
         )
