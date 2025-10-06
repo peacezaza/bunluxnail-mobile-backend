@@ -12,8 +12,7 @@ from email.message import EmailMessage
 import aiosmtplib
 from fastapi.middleware.cors import CORSMiddleware
 from auth import *
-from pydantic import BaseModel
-
+from pydantic import BaseModel, with_config
 
 load_dotenv()
 
@@ -67,8 +66,13 @@ async def say_hello(name: str):
 #     return {"access_token": access_token, "token_type": "bearer"}
 
 
+class SignupRequest(BaseModel):
+    username : str
+    password : str
+    email : str
+
 @app.post("/signup")
-async def signup(data : dict):
+async def signup(data : SignupRequest):
     print(data)
     username = data["username"]
     password = data["password"]
@@ -88,7 +92,7 @@ async def signup(data : dict):
 
             return {"message": "User created", "status" : True, "token": token}
 
-@app.post("/update_user")
+@app.put("/update_user")
 async def update_user(
     id: int = Form(...),
     first_name: str = Form(...),
@@ -271,3 +275,42 @@ async def verify_otp(data : OTPVerify, result: dict = Depends(verify_jwt_token))
 # "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6NywiZXhwIjoxNzU5NDc5MDMwfQ.6eb9DBDTyuris4hViDlC8XZNmod3DM-RUWU5nmCRfGw",
 
 
+class ResetPasswordRequestOTP(BaseModel):
+    id: int
+    new_password: str
+
+@app.put("/reset-password/otp")
+async def reset_password(data : ResetPasswordRequestOTP):
+    async with app.state.pool.acquire() as conn:
+        hash_password = get_password_hash(data.new_password)
+        row = await conn.fetchrow("UPDATE users SET password = $1 WHERE id = $2", hash_password, data.id)
+        if row:
+            return {"message": "Password updated successfully!", "status" : True}
+        else:
+            return {"message": "Error during updating password", "status" : False}
+
+
+class ResetPasswordRequestOldPassword(BaseModel):
+    id: int
+    old_password: str
+    new_password: str
+
+@app.put("/reset-password")
+async def reset_password(data : ResetPasswordRequestOldPassword):
+    async with app.state.pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT password FROM users WHERE id = $1", data.id)
+        if row:
+            print(row["password"])
+            is_correct_old_password = verify_password(data.old_password, row["password"])
+            if is_correct_old_password:
+                hashed_new_password = get_password_hash(data.new_password)
+                insert_new_password = await conn.fetchrow("UPDATE users set password = $1 WHERE id = $2", hashed_new_password, data.id)
+                if insert_new_password:
+                    return {"message": "Password updated successfully!", "status" : True}
+                else:
+                    return {"message" : "Error during password update", "status" : False}
+            else:
+                return {"message": "Incorrect Password", "status" : False}
+            return {row}
+        else:
+            return {"message" : "User not found", "status" : False}
