@@ -1,14 +1,18 @@
 import os
+import random
+import asyncio
 from http.client import responses
 import base64
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body
 from dotenv import load_dotenv
 import asyncpg
 import shutil
 from datetime import datetime
-
+from email.message import EmailMessage
+import aiosmtplib
 from fastapi.middleware.cors import CORSMiddleware
 from auth import *
+from pydantic import BaseModel
 
 
 load_dotenv()
@@ -134,9 +138,14 @@ async def update_user(
 
 
 
+class LoginRequest(BaseModel):
+    email : str
+    username: str
+    password: str
 
-@app.get("/login")
-async def login(data :dict):
+
+@app.post("/login")
+async def login(data :LoginRequest):
     """
     ใช้ username หรือ email + password เพื่อเข้าสู่ระบบ
     - ถ้า `username` มีค่า → ระบบจะเช็ค username
@@ -154,9 +163,9 @@ async def login(data :dict):
     """
 
     print(data)
-    username = data["username"]
-    email = data["email"]
-    password = data["password"]
+    username = data.username
+    email = data.email
+    password = data.password
 
     if username != "" :
         print(username)
@@ -194,5 +203,71 @@ async def login(data :dict):
 async def verify_token(result: dict = Depends(verify_jwt_token)):
     return result
 
+otp_store = {}
+async def send_email(recipient: str, otp: str):
+    msg = EmailMessage()
+    msg["From"] = os.getenv("EMAIL_USER")
+    msg["To"] = recipient
+    msg["Subject"] = "Your OTP Verification Code"
+    msg.set_content(f"Your OTP code is: {otp}\n\nThis code will expire in 2 minutes.")
+
+    await aiosmtplib.send(
+        msg,
+        hostname=os.getenv("SMTP_SERVER"),
+        port=int(os.getenv("SMTP_PORT")),
+        start_tls=True,
+        username=os.getenv("EMAIL_USER"),
+        password=os.getenv("EMAIL_PASS"),
+    )
+
+class EmailRequest(BaseModel):
+    email: str
+
+@app.post("/send-otp")
+async def send_otp(data : EmailRequest, result: dict = Depends(verify_jwt_token)):
+    print(f"✅ Token verified for user id: {result['id']}")
+
+    async with app.state.pool.acquire() as conn:
+        row = await conn.fetchrow("SELECT id FROM users WHERE email = $1", data.email)
+        if not row:
+            return {"message": "Email not found", "status" : False}
+        else:
+
+            otp = str(random.randint(100000, 999999))
+
+            expire_time = datetime.utcnow() + timedelta(minutes=2)
+
+            otp_store[data.email] = {"otp": otp, "expires": expire_time}
+
+            try:
+                await send_email(data.email, otp)
+                return {"message": f"OTP sent to {data.email}", "status" : True}
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=str(e))
+
+
+
+class OTPVerify(BaseModel):
+    email: str
+    otp: str
+@app.post("/verify-otp")
+async def verify_otp(data : OTPVerify, result: dict = Depends(verify_jwt_token)):
+    record = otp_store.get(data.email)
+
+    if not record:
+        raise HTTPException(status_code=404, detail="No OTP found for this email")
+
+    if datetime.utcnow() > record["expires"]:
+        del otp_store[data.email]
+        raise HTTPException(status_code=400, detail="OTP expired")
+
+    if record["otp"] != data.otp:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+
+    del otp_store[data.email]
+
+    return {"message": "OTP verified successfully!"}
 
 # "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6NywiZXhwIjoxNzU5NDc5MDMwfQ.6eb9DBDTyuris4hViDlC8XZNmod3DM-RUWU5nmCRfGw",
+
+
