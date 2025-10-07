@@ -13,6 +13,7 @@ import aiosmtplib
 from fastapi.middleware.cors import CORSMiddleware
 from auth import *
 from pydantic import BaseModel, with_config
+from typing import Optional
 
 load_dotenv()
 
@@ -37,12 +38,18 @@ async def startup():
     print("Server started, endpoints loaded")
     app.state.pool = await asyncpg.create_pool(
         dsn=DATABASE_URL,
-        statement_cache_size=0
+        statement_cache_size=0,
+        max_inactive_connection_lifetime = 30,
     )
 
 @app.on_event("shutdown")
 async def shutdown():
-    await app.state.pool.close()
+    print("🧹 Closing connection pool...")
+    try:
+        await asyncio.wait_for(app.state.pool.close(), timeout=10.0)
+        print("✅ Connection pool closed")
+    except asyncio.TimeoutError:
+        print("⚠️ Timeout: Force closed remaining connections")
 
 @app.get("/")
 async def root():
@@ -71,7 +78,12 @@ class SignupRequest(BaseModel):
     password : str
     email : str
 
-@app.post("/signup")
+class SignupResponse(BaseModel):
+    message : str
+    status : bool
+    token : str
+
+@app.post("/signup", response_model=SignupResponse)
 async def signup(data : SignupRequest):
     print(data)
     username = data["username"]
@@ -81,7 +93,7 @@ async def signup(data : SignupRequest):
     async with app.state.pool.acquire() as conn:
         row = await conn.fetchrow("SELECT id from users where username = $1 or email = $2", username, email)
         if row:
-            return {"message": "User already exists", "status" : False}
+            return {"message": "User already exists", "status" : False, "token" : ""}
         else :
             hashed_pw = get_password_hash(password)
             insert_row = await conn.fetchrow("INSERT INTO users (username, email, password) VALUES ($1, $2, $3) RETURNING id", username, email, hashed_pw)
@@ -92,7 +104,7 @@ async def signup(data : SignupRequest):
 
             return {"message": "User created", "status" : True, "token": token}
 
-@app.put("/update_user")
+@app.post("/update_user")
 async def update_user(
     id: int = Form(...),
     first_name: str = Form(...),
@@ -106,12 +118,7 @@ async def update_user(
 
     image_bytes = await picture.read()
 
-    file_ext = os.path.splitext(picture.filename)[1]  # keep .jpg/.png
-    filename = f"user_{id}_{datetime.now().strftime('%Y%m%d%H%M%S')}{file_ext}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
 
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(picture.file, buffer)
     query = """
         UPDATE users
         SET first_name = $1,
@@ -148,7 +155,9 @@ class LoginRequest(BaseModel):
     password: str
 
 
-@app.post("/login")
+
+
+@app.post("/login", response_model=SignupResponse)
 async def login(data :LoginRequest):
     """
     ใช้ username หรือ email + password เพื่อเข้าสู่ระบบ
@@ -180,11 +189,11 @@ async def login(data :LoginRequest):
                 is_correct_password  = verify_password(password, row["password"])
                 if is_correct_password:
                     token = create_access_token({"id" : row["id"]}, expires_delta=timedelta(minutes=30))
-                    return {"token" : token, "status": True}
+                    return {"message" : "Login Successfully", "status": True, "token" : token}
                 else:
-                    return {"message" : "Incorrect Password", "status" : False}
+                    return {"message" : "Incorrect Password", "status" : False, "token": ""}
             else:
-                return {"message": "User not found", "status" : False}
+                return {"message": "User not found", "status" : False, "token": ""}
     elif email != "" :
         print(email)
         async with app.state.pool.acquire() as conn:
@@ -254,7 +263,11 @@ async def send_otp(data : EmailRequest, result: dict = Depends(verify_jwt_token)
 class OTPVerify(BaseModel):
     email: str
     otp: str
-@app.post("/verify-otp")
+
+class OTPResponse(BaseModel):
+    message : str
+
+@app.post("/verify-otp", response_model=OTPResponse)
 async def verify_otp(data : OTPVerify, result: dict = Depends(verify_jwt_token)):
     record = otp_store.get(data.email)
 
@@ -314,3 +327,46 @@ async def reset_password(data : ResetPasswordRequestOldPassword):
             return {row}
         else:
             return {"message" : "User not found", "status" : False}
+
+class IdRequest(BaseModel):
+    id: int
+
+class ProfileResponse(BaseModel):
+    id: int
+    username: str
+    email: str
+    first_name: Optional[str]
+    last_name: Optional[str]
+    phone: Optional[str]
+    gender: Optional[str]
+    role: Optional[str]
+    picture_base64: Optional[str]
+
+@app.get("/profile", response_model=ProfileResponse)
+async def profile(data: IdRequest):
+    async with app.state.pool.acquire() as conn:
+        row = await conn.fetchrow("""
+            SELECT id, username, email, first_name, last_name, phone, gender, picture, role 
+            FROM users WHERE id = $1
+        """, data.id)
+
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    image_bytes = row["picture"]
+    image_base64 = None
+    if image_bytes:
+        # ✅ แปลง bytea เป็น Base64 string
+        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "email": row["email"],
+        "first_name": row["first_name"],
+        "last_name": row["last_name"],
+        "phone": row["phone"],
+        "gender": row["gender"],
+        "role": row["role"],
+        "picture_base64": f"data:image/png;base64,{image_base64}" if image_base64 else None
+    }
