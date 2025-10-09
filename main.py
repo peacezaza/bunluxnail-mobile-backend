@@ -7,12 +7,16 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Body
 from dotenv import load_dotenv
 import asyncpg
 import shutil
-from datetime import datetime
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from email.message import EmailMessage
 import aiosmtplib
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import Boolean
+
+
 from auth import *
-from pydantic import BaseModel, with_config
+from pydantic import BaseModel, EmailStr, Field
 from typing import Optional
 
 load_dotenv()
@@ -83,7 +87,7 @@ class SignupResponse(BaseModel):
     status : bool
     token : str
 
-@app.post("/signup", response_model=SignupResponse)
+@app.post("/signup", response_model=SignupResponse, tags=["Authentication"])
 async def signup(data : SignupRequest):
     print(data)
     username = data["username"]
@@ -104,7 +108,7 @@ async def signup(data : SignupRequest):
 
             return {"message": "User created", "status" : True, "token": token}
 
-@app.post("/update_user")
+@app.post("/update_user", tags=["Profile"])
 async def update_user(
     id: int = Form(...),
     first_name: str = Form(...),
@@ -150,14 +154,19 @@ async def update_user(
 
 
 class LoginRequest(BaseModel):
-    email : str
-    username: str
+    username: Optional[str] = Field(None, description="Username (leave empty if using email)")
+    email: Optional[EmailStr] = Field(None, description="Email (leave empty if using username)")
     password: str
 
 
+class LoginResponse(BaseModel):
+    message : str
+    status : bool
+    token : Optional[str]
 
 
-@app.post("/login", response_model=SignupResponse)
+
+@app.post("/login", response_model=LoginResponse, tags=["Authentication"])
 async def login(data :LoginRequest):
     """
     ใช้ username หรือ email + password เพื่อเข้าสู่ระบบ
@@ -236,7 +245,7 @@ async def send_email(recipient: str, otp: str):
 class EmailRequest(BaseModel):
     email: str
 
-@app.post("/send-otp")
+@app.post("/send-otp", tags=["Authentication"])
 async def send_otp(data : EmailRequest, result: dict = Depends(verify_jwt_token)):
     print(f"✅ Token verified for user id: {result['id']}")
 
@@ -267,7 +276,7 @@ class OTPVerify(BaseModel):
 class OTPResponse(BaseModel):
     message : str
 
-@app.post("/verify-otp", response_model=OTPResponse)
+@app.post("/verify-otp", response_model=OTPResponse, tags=["Authentication"])
 async def verify_otp(data : OTPVerify, result: dict = Depends(verify_jwt_token)):
     record = otp_store.get(data.email)
 
@@ -292,8 +301,8 @@ class ResetPasswordRequestOTP(BaseModel):
     id: int
     new_password: str
 
-@app.put("/reset-password/otp")
-async def reset_password(data : ResetPasswordRequestOTP):
+@app.put("/reset-password/otp", tags=["Authentication"])
+async def reset_password(data : ResetPasswordRequestOTP, result: dict = Depends(verify_jwt_token)):
     async with app.state.pool.acquire() as conn:
         hash_password = get_password_hash(data.new_password)
         row = await conn.fetchrow("UPDATE users SET password = $1 WHERE id = $2", hash_password, data.id)
@@ -308,8 +317,8 @@ class ResetPasswordRequestOldPassword(BaseModel):
     old_password: str
     new_password: str
 
-@app.put("/reset-password")
-async def reset_password(data : ResetPasswordRequestOldPassword):
+@app.put("/reset-password", tags=["Authentication"])
+async def reset_password(data : ResetPasswordRequestOldPassword,result: dict = Depends(verify_jwt_token)):
     async with app.state.pool.acquire() as conn:
         row = await conn.fetchrow("SELECT password FROM users WHERE id = $1", data.id)
         if row:
@@ -342,8 +351,9 @@ class ProfileResponse(BaseModel):
     role: Optional[str]
     picture_base64: Optional[str]
 
-@app.get("/profile", response_model=ProfileResponse)
-async def profile(data: IdRequest):
+@app.get("/profile", response_model=ProfileResponse, tags=["Profile"])
+async def profile(data: IdRequest, result: dict = Depends(verify_jwt_token)):
+    print(result)
     async with app.state.pool.acquire() as conn:
         row = await conn.fetchrow("""
             SELECT id, username, email, first_name, last_name, phone, gender, picture, role 
@@ -370,3 +380,125 @@ async def profile(data: IdRequest):
         "role": row["role"],
         "picture_base64": f"data:image/png;base64,{image_base64}" if image_base64 else None
     }
+
+
+class ServicesResponse(BaseModel):
+    id:int
+    service_name: str
+    service_detail : str
+    price : int
+    picture : Optional[str]
+@app.get("/services", response_model=ServicesResponse,tags=["Reservation"])
+async def services(result: dict = Depends(verify_jwt_token)):
+    async with app.state.pool.acquire() as conn:
+        row = await conn.fetch("SELECT * FROM services")
+        if row:
+            print("Row is:")
+            print(row)
+            return row
+
+        print("TAP")
+        return {"message": "successful"}
+
+
+class ReservationRequest(BaseModel):
+    id:int
+    date : str
+    period : str
+    selected_services_id : list
+
+class ReservationResponse(BaseModel):
+    message : str
+
+
+
+@app.post("/reservation",tags=["Reservation"])
+async def reservation(data:ReservationRequest):
+    """
+    - Example use
+    {
+    "id": 7,
+    "selected_services_id" : [1,2,3,4],
+    "date" : "2025-10-08",
+    "period" : "10:00"
+    }
+    """
+    print(data.selected_services_id)
+    # [1, 2, 3, 4]
+    for i in data.selected_services_id:
+        print("i is : ", i)
+
+    # format_string_only = "%Y-%m-%d"
+    format_string = "%Y-%m-%d %H:%M:%S"
+    format_date_tz = "%Y-%m-%d %H:%M:%S%z"
+    date_object = datetime.strptime(f"{data.date} {data.period}:00", format_string).replace(tzinfo=ZoneInfo("Asia/Bangkok"))
+    day_of_week = date_object.strftime("%A")
+    date_edit_object = date_object
+    # print("Day of week: ", day_of_week)
+    # print("Date Object: ", date_object.strftime("%A"))
+    # print("Date with TimeZone", date_object)
+
+
+    async with app.state.pool.acquire() as conn:
+        get_day = await conn.fetchrow("SELECT * FROM shop_hours WHERE day = $1", day_of_week)
+        if get_day:
+            """
+            {
+            "id": 3,
+            "day": "Wednesday",
+            "open_time": "18:30:00+07:00",
+            "close_time": "00:30:00+07:00"
+            }
+            """
+            # print("Row is:", get_day["open_time"])
+            open_date = datetime.strptime(f"{data.date} {get_day["open_time"]}", format_date_tz)
+            close_date = datetime.strptime(f"{data.date} {get_day['close_time']}", format_date_tz)
+            reseration_date_add_two_hours = date_object + timedelta(hours=2)
+
+            # if date_object.time() < open_date.time():
+            #     print("\n-------------------------")
+            #     print(data.period)
+            #     print(reseration_date_add_two_hours)
+            #     print(open_date.time())
+            #     print("-------------------------\n")
+            #
+            print("\n-------------------------")
+            print(date_object)
+            print(reseration_date_add_two_hours)
+            print(open_date)
+            print("-------------------------\n")
+
+            if close_date.time() < open_date.time():
+                close_date += timedelta(days=1)
+
+            #
+            # print("Open:", open_date,"\nClose:", close_date)
+            #
+            # print("Reservation Date :", date_object)
+
+            if date_object >= open_date and reseration_date_add_two_hours <= close_date:
+                fetch_reservation = await conn.fetch("SELECT user_id, status, date AT TIME ZONE 'Asia/Bangkok' AS date FROM booking WHERE date = $1 and status = $2", date_object, "confirmed")
+            #     2025-10-08 18:30:00+07:00
+                if fetch_reservation:
+                    print("Reserved Data :",fetch_reservation)
+                    return {"message" : "Duplicate reservation", "status" : False}
+                else:
+                    add_reservation = await conn.fetchrow("INSERT INTO booking (user_id, status, date) VALUES ($1, $2, $3) RETURNING id", data.id, "confirmed", date_object)
+                    if add_reservation:
+                        print("New Reserved Id: ",add_reservation["id"])
+                        for i in data.selected_services_id:
+                            add_service = await conn.fetchrow("INSERT INTO booking_services (booking_id, service_id) VALUES ($1, $2)", add_reservation["id"], i)
+                            # print(add_service)
+
+
+                        # print(data.selected_services_id)
+
+                        return {"message" : "Added Reservation Successfully", "status" : True}
+                    else:
+                        return {"message" : "test"}
+            else:
+                return {"message" : "time is < open time or time + 2 > close time", "status" : False}
+
+@app.get("/available/Time",tags=["Reservation"])
+async def available_time(data: dict):
+    print(data)
