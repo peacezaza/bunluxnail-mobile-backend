@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from email.message import EmailMessage
 import aiosmtplib
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import Boolean
+
 
 
 from auth import *

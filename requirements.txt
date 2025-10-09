@@ -9,4 +9,3 @@ python-jose[cryptography]
 pydantic
 aiosmtplib
 tzdata
-sqlalchemy
