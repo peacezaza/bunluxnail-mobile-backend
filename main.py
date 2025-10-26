@@ -50,15 +50,39 @@ async def startup():
 async def shutdown():
     print("🧹 Closing connection pool...")
     try:
-        await asyncio.wait_for(app.state.pool.close(), timeout=10.0)
+        # Cancel all running tasks
+        tasks = [task for task in asyncio.all_tasks() if task is not asyncio.current_task()]
+        for task in tasks:
+            task.cancel()
+        # Close pool with shorter timeout
+        await asyncio.wait_for(app.state.pool.close(), timeout=3.0)
         print("✅ Connection pool closed")
     except asyncio.TimeoutError:
-        print("⚠️ Timeout: Force closed remaining connections")
+        print("⚠️ Timeout: Force closing pool")
+        app.state.pool.terminate()  # Force close
+        await app.state.pool.wait_closed()
+    except Exception as e:
+        print(f"⚠️ Shutdown error: {e}")
+    finally:
+        # Clean up event loop
+        loop = asyncio.get_event_loop()
+        loop.stop()
+        loop.run_until_complete(loop.shutdown_asyncgens())
+        loop.close()
+
+@app.get("/debug-pool")
+async def debug_pool():
+    return {
+        "total_conns": app.state.pool._holder._conns,
+        "free_conns": app.state.pool._holder._free,
+        "active_tasks": len(asyncio.all_tasks())
+    }
 
 @app.get("/")
 async def root():
     async with app.state.pool.acquire() as conn:
         row = await conn.fetchrow("SELECT now() AS current_time;")
+        return {"message": "Hello World"}
         return {"db_time": row["current_time"]}
 
 @app.get("/hello/{name}")
@@ -499,6 +523,10 @@ async def reservation(data:ReservationRequest):
             else:
                 return {"message" : "time is < open time or time + 2 > close time", "status" : False}
 
+
+class availableTimeRequest(BaseModel):
+    date:str
+
 @app.get("/available/Time",tags=["Reservation"])
-async def available_time(data: dict):
+async def available_time(data: availableTimeRequest):
     print(data)
