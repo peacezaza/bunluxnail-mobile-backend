@@ -34,7 +34,7 @@ app.add_middleware(
 
 
 
-UPLOAD_DIR = "uploads"
+UPLOAD_DIR = "/tmp/uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 #
 @app.on_event("startup")
