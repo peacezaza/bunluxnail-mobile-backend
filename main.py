@@ -64,7 +64,6 @@ async def shutdown():
     except Exception as e:
         print(f"⚠️ Shutdown error: {e}")
     finally:
-        # Clean up event loop
         loop = asyncio.get_event_loop()
         loop.stop()
         loop.run_until_complete(loop.shutdown_asyncgens())
@@ -90,15 +89,6 @@ async def say_hello(name: str):
     return {"message": f"Hellooo {name}"}
 
 
-# @app.post("/signup", response_model=Token)
-# def signup(data : dict):
-#     username = data.get("username")
-#     email = data.get("email")
-#     password = data.get("password")
-#     if not user:
-#         raise HTTPException(status_code=401, detail="Invalid credentials")
-#     access_token = create_access_token(data={"sub": user["username"]})
-#     return {"access_token": access_token, "token_type": "bearer"}
 
 
 class SignupRequest(BaseModel):
